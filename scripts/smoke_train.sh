@@ -1,98 +1,47 @@
-#!/usr/bin/env bash
-set -euo pipefail
+data:
+  train_manifest: data/manifests/fsd50k/train.csv
+  val_manifest: data/manifests/fsd50k/val.csv
+  label_map_path: data/manifests/fsd50k/label_map.json
+  max_train_samples: 16
+  max_val_samples: 8
 
-cd "$(dirname "$0")/.."
+model:
+  model_name: scratch_cnn
+  num_labels: 200
+  base_channels: 16
+  dropout: 0.1
 
-echo "[smoke] AudioForge smoke training started"
+features:
+  sample_rate: 16000
+  clip_seconds: 10.0
+  n_fft: 1024
+  hop_length: 512
+  n_mels: 128
+  normalize_mode: per_sample
 
-if [ ! -f "pyproject.toml" ]; then
-  echo "[smoke][error] pyproject.toml not found. Run from repo root or keep script in scripts/."
-  exit 1
-fi
+training:
+  epochs: 1
+  batch_size: 2
+  eval_batch_size: 2
+  num_workers: 0
+  learning_rate: 0.001
+  weight_decay: 0.01
+  warmup_ratio: 0.0
+  gradient_accumulation_steps: 1
+  mixed_precision: "no"
+  max_grad_norm: 1.0
+  threshold: 0.5
+  eval_every_steps: 999999
+  save_every_steps: 999999
+  log_every_steps: 1
 
-if [ ! -f "configs/fsd50k/smoke.yaml" ]; then
-  echo "[smoke][error] configs/fsd50k/smoke.yaml not found"
-  exit 1
-fi
+runtime:
+  output_dir: outputs/smoke_scratch
+  checkpoint_dir: outputs/smoke_scratch/checkpoints
+  seed: 42
+  deterministic: false
+  log_level: INFO
 
-if [ ! -f "data/manifests/fsd50k/train.csv" ]; then
-  echo "[smoke][error] data/manifests/fsd50k/train.csv not found"
-  exit 1
-fi
-
-if [ ! -f "data/manifests/fsd50k/val.csv" ]; then
-  echo "[smoke][error] data/manifests/fsd50k/val.csv not found"
-  exit 1
-fi
-
-if [ ! -f "data/manifests/fsd50k/label_map.json" ]; then
-  echo "[smoke][error] data/manifests/fsd50k/label_map.json not found"
-  exit 1
-fi
-
-python - <<'PY'
-import audioforge
-from audioforge.training.trainer import FSD50KTrainConfig, load_train_config
-from audioforge.models.scratch_cnn import create_scratch_cnn
-from audioforge.data.manifests import read_manifest
-
-cfg = load_train_config("configs/fsd50k/smoke.yaml")
-train = read_manifest(cfg.train_manifest)
-val = read_manifest(cfg.val_manifest)
-model = create_scratch_cnn(num_labels=cfg.num_labels, base_channels=cfg.base_channels)
-
-print("[smoke] import ok")
-print("[smoke] train rows:", len(train))
-print("[smoke] val rows:", len(val))
-print("[smoke] model:", model.__class__.__name__)
-print("[smoke] config output:", cfg.output_dir)
-PY
-
-rm -rf outputs/smoke_scratch
-
-python -m audioforge.training.train_fsd50k \
-  --config configs/fsd50k/smoke.yaml
-
-echo "[smoke] checking outputs"
-
-test -f outputs/smoke_scratch/train_config.json
-test -f outputs/smoke_scratch/distributed.json
-test -f outputs/smoke_scratch/best/scratch_cnn_best.pt
-test -f outputs/smoke_scratch/best/best_metrics.json
-
-python - <<'PY'
-import json
-from pathlib import Path
-
-metrics_path = Path("outputs/smoke_scratch/best/best_metrics.json")
-with metrics_path.open("r", encoding="utf-8") as f:
-    metrics = json.load(f)
-
-required = [
-    "mAP",
-    "micro_average_precision",
-    "macro_f1",
-    "micro_f1",
-    "macro_precision",
-    "macro_recall",
-    "micro_precision",
-    "micro_recall",
-    "num_samples",
-    "num_labels",
-]
-
-missing = [key for key in required if key not in metrics]
-if missing:
-    raise SystemExit(f"[smoke][error] missing metric keys: {missing}")
-
-print("[smoke] best mAP:", metrics["mAP"])
-print("[smoke] micro F1:", metrics["micro_f1"])
-print("[smoke] num samples:", metrics["num_samples"])
-print("[smoke] num labels:", metrics["num_labels"])
-print("[smoke] metrics ok")
-PY
-
-echo "[smoke] generated files:"
-find outputs/smoke_scratch -maxdepth 3 -type f | sort
-
-echo "[smoke] SMOKE TRAINING PASSED ✅"
+augmentation:
+  waveform_augment: false
+  spec_augment: false

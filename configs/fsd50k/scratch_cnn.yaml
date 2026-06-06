@@ -1,0 +1,47 @@
+data:
+  train_manifest: data/manifests/fsd50k/train.csv
+  val_manifest: data/manifests/fsd50k/val.csv
+  label_map_path: data/manifests/fsd50k/label_map.json
+  max_train_samples:
+  max_val_samples:
+
+model:
+  model_name: scratch_cnn
+  num_labels: 200
+  base_channels: 32
+  dropout: 0.2
+
+features:
+  sample_rate: 16000
+  clip_seconds: 10.0
+  n_fft: 1024
+  hop_length: 512
+  n_mels: 128
+  normalize_mode: per_sample
+
+training:
+  epochs: 5
+  batch_size: 32
+  eval_batch_size: 64
+  num_workers: 8
+  learning_rate: 0.001
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  gradient_accumulation_steps: 1
+  mixed_precision: "fp16"
+  max_grad_norm: 1.0
+  threshold: 0.5
+  eval_every_steps: 1000
+  save_every_steps: 2000
+  log_every_steps: 25
+
+runtime:
+  output_dir: outputs/fsd50k/scratch_cnn_full
+  checkpoint_dir: outputs/fsd50k/scratch_cnn_full/checkpoints
+  seed: 42
+  deterministic: false
+  log_level: INFO
+
+augmentation:
+  waveform_augment: true
+  spec_augment: true

@@ -5,12 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-import soundfile as sf
 import torch
 import torchaudio
 
 
-AudioBackend = Literal["soundfile"]
+AudioBackend = Literal["torchaudio"]
 
 
 @dataclass(frozen=True)
@@ -22,10 +21,12 @@ class WaveformConfig:
     pad_mode: Literal["constant"] = "constant"
 
 
-def load_audio(path: str | Path, backend: AudioBackend = "soundfile") -> tuple[torch.Tensor, int]:
-    """Load audio as tensor shaped [channels, time].
+def load_audio(path: str | Path, backend: AudioBackend = "torchaudio") -> tuple[torch.Tensor, int]:
+    """Load audio as a tensor shaped [channels, time].
 
-    FSD50K is WAV, so soundfile is stable and avoids torchaudio/torchcodec loader issues.
+    Returns:
+        waveform: Float tensor [channels, time]
+        sample_rate: Original sample rate
     """
 
     audio_path = Path(path)
@@ -33,19 +34,16 @@ def load_audio(path: str | Path, backend: AudioBackend = "soundfile") -> tuple[t
     if not audio_path.exists():
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-    if backend != "soundfile":
+    if backend != "torchaudio":
         raise ValueError(f"Unsupported audio backend: {backend}")
 
-    data, sample_rate = sf.read(str(audio_path), always_2d=True, dtype="float32")
-
-    if data.size == 0:
-        raise ValueError(f"Empty audio file: {audio_path}")
-
-    # soundfile returns [time, channels], PyTorch audio convention is [channels, time]
-    waveform = torch.from_numpy(data).transpose(0, 1).contiguous()
+    waveform, sample_rate = torchaudio.load(str(audio_path))
 
     if waveform.ndim != 2:
         raise ValueError(f"Expected waveform shape [channels, time], got {tuple(waveform.shape)}")
+
+    if waveform.numel() == 0:
+        raise ValueError(f"Empty audio file: {audio_path}")
 
     return waveform.float(), int(sample_rate)
 
@@ -93,7 +91,17 @@ def crop_or_pad_waveform(
     crop_mode: Literal["center", "random", "start"] = "center",
     pad_mode: Literal["constant"] = "constant",
 ) -> torch.Tensor:
-    """Crop or pad waveform to fixed number of samples."""
+    """Crop or pad waveform to fixed number of samples.
+
+    Args:
+        waveform: Tensor [channels, time]
+        target_num_samples: Required output length
+        crop_mode: How to crop if waveform is too long
+        pad_mode: How to pad if waveform is too short
+
+    Returns:
+        Tensor [channels, target_num_samples]
+    """
 
     if waveform.ndim != 2:
         raise ValueError(f"Expected waveform shape [channels, time], got {tuple(waveform.shape)}")
@@ -160,7 +168,7 @@ def prepare_waveform(
     """Full waveform preparation.
 
     Pipeline:
-    load audio -> mono -> resample -> fixed crop/pad -> optional peak normalize
+    load audio → mono → resample → fixed crop/pad → optional peak normalize
 
     Returns:
         Tensor [1, target_samples] if mono=True
@@ -195,11 +203,11 @@ def prepare_waveform(
 
 
 def get_audio_duration_seconds(path: str | Path) -> float:
-    """Return audio duration in seconds without loading full waveform."""
+    """Return audio duration in seconds without loading full waveform when possible."""
 
-    info = sf.info(str(path))
+    info = torchaudio.info(str(path))
 
-    if info.samplerate <= 0:
+    if info.sample_rate <= 0:
         return 0.0
 
-    return float(info.frames) / float(info.samplerate)
+    return float(info.num_frames) / float(info.sample_rate)

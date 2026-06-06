@@ -3,18 +3,17 @@ from __future__ import annotations
 import json
 import math
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 import yaml
-from accelerate import Accelerator
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
-from transformers import get_linear_schedule_with_warmup
+from transformers import AutoFeatureExtractor, get_linear_schedule_with_warmup
 
-from audioforge.data.manifests import ManifestRow, read_manifest
+from audioforge.data.manifests import read_manifest
 from audioforge.evaluation.fsd50k_metrics import (
     FSD50KMetrics,
     compute_fsd50k_metrics,
@@ -29,6 +28,7 @@ from audioforge.features.augment import (
 )
 from audioforge.features.logmel import LogMelExtractor, make_logmel_extractor
 from audioforge.features.waveform import WaveformConfig, prepare_waveform
+from audioforge.models.ast import create_ast_classifier
 from audioforge.models.scratch_cnn import create_scratch_cnn
 from audioforge.training.distributed import (
     create_accelerator,
@@ -42,6 +42,8 @@ from audioforge.utils.seed import seed_everything
 
 logger = get_logger(__name__)
 
+InputMode = Literal["logmel", "ast"]
+
 
 @dataclass
 class FSD50KTrainConfig:
@@ -54,9 +56,11 @@ class FSD50KTrainConfig:
     resume_from: str | None = None
 
     model_name: str = "scratch_cnn"
+    pretrained_name_or_path: str | None = None
     num_labels: int = 200
     base_channels: int = 32
     dropout: float = 0.2
+    freeze_backbone: bool = False
 
     sample_rate: int = 16_000
     clip_seconds: float = 10.0
@@ -69,7 +73,7 @@ class FSD50KTrainConfig:
     batch_size: int = 8
     eval_batch_size: int = 16
     num_workers: int = 2
-    learning_rate: float = 1e-3
+    learning_rate: float = 1e-4
     weight_decay: float = 1e-2
     warmup_ratio: float = 0.05
     gradient_accumulation_steps: int = 1
@@ -93,26 +97,8 @@ class FSD50KTrainConfig:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> FSD50KTrainConfig:
-        """Load config from flat or nested YAML.
-
-        Accepts both:
-            batch_size: 8
-
-        and:
-            training:
-              batch_size: 8
-        """
-
         data: dict[str, Any] = {}
-
-        nested_keys = [
-            "data",
-            "model",
-            "features",
-            "training",
-            "runtime",
-            "augmentation",
-        ]
+        nested_keys = ["data", "model", "features", "training", "runtime", "augmentation"]
 
         for key, value in raw.items():
             if key not in nested_keys:
@@ -153,7 +139,9 @@ class FSD50KDataset(Dataset[dict[str, Any]]):
         manifest_path: str | Path,
         label_map_path: str | Path,
         waveform_config: WaveformConfig,
-        logmel_extractor: LogMelExtractor,
+        input_mode: InputMode,
+        logmel_extractor: LogMelExtractor | None,
+        ast_feature_extractor: Any | None,
         training: bool,
         max_samples: int | None = None,
         waveform_augment_config: WaveformAugmentConfig | None = None,
@@ -167,12 +155,18 @@ class FSD50KDataset(Dataset[dict[str, Any]]):
         self.label_to_id, self.id_to_label = load_label_info(label_map_path)
         self.num_labels = len(self.label_to_id)
         self.waveform_config = waveform_config
+        self.input_mode = input_mode
         self.logmel_extractor = logmel_extractor
+        self.ast_feature_extractor = ast_feature_extractor
         self.training = training
-        self.waveform_augment_config = waveform_augment_config or WaveformAugmentConfig(
-            enabled=training
-        )
+        self.waveform_augment_config = waveform_augment_config or WaveformAugmentConfig(enabled=training)
         self.spec_augment_config = spec_augment_config or SpecAugmentConfig(enabled=training)
+
+        if self.input_mode == "logmel" and self.logmel_extractor is None:
+            raise ValueError("logmel input_mode requires logmel_extractor")
+
+        if self.input_mode == "ast" and self.ast_feature_extractor is None:
+            raise ValueError("ast input_mode requires ast_feature_extractor")
 
         if not self.rows:
             raise ValueError(f"No rows loaded from manifest: {manifest_path}")
@@ -183,38 +177,46 @@ class FSD50KDataset(Dataset[dict[str, Any]]):
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.rows[index]
 
-        waveform = prepare_waveform(
-            row.path,
-            self.waveform_config,
-            normalize_peak=True,
-        )
+        waveform = prepare_waveform(row.path, self.waveform_config, normalize_peak=True)
 
         if self.training and self.waveform_augment_config.enabled:
             waveform = augment_waveform(waveform, self.waveform_augment_config)
 
-        input_values = self.logmel_extractor(waveform)
+        if self.input_mode == "logmel":
+            assert self.logmel_extractor is not None
+            input_values = self.logmel_extractor(waveform)
 
-        if self.training and self.spec_augment_config.enabled:
-            input_values = spec_augment(input_values, self.spec_augment_config)
+            if self.training and self.spec_augment_config.enabled:
+                input_values = spec_augment(input_values, self.spec_augment_config)
+
+            input_values = input_values.float()
+
+        elif self.input_mode == "ast":
+            assert self.ast_feature_extractor is not None
+            features = self.ast_feature_extractor(
+                waveform.squeeze(0).numpy(),
+                sampling_rate=self.waveform_config.sample_rate,
+                return_tensors="pt",
+            )
+            input_values = features["input_values"].squeeze(0).float()
+
+        else:
+            raise ValueError(f"Unsupported input_mode: {self.input_mode}")
 
         labels = multi_hot_encode(row.labels, self.label_to_id)
 
         return {
-            "input_values": input_values.float(),
+            "input_values": input_values,
             "labels": labels.float(),
             "path": row.path,
         }
 
 
 def collate_fsd50k_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
-    input_values = torch.stack([item["input_values"] for item in batch], dim=0)
-    labels = torch.stack([item["labels"] for item in batch], dim=0)
-    paths = [item["path"] for item in batch]
-
     return {
-        "input_values": input_values,
-        "labels": labels,
-        "paths": paths,
+        "input_values": torch.stack([item["input_values"] for item in batch], dim=0),
+        "labels": torch.stack([item["labels"] for item in batch], dim=0),
+        "paths": [item["path"] for item in batch],
     }
 
 
@@ -247,7 +249,7 @@ class FSD50KTrainer:
     def train(self) -> None:
         model = self._build_model()
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            [p for p in model.parameters() if p.requires_grad],
             lr=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
         )
@@ -278,6 +280,8 @@ class FSD50KTrainer:
 
         if self.accelerator.is_main_process:
             logger.info("Starting training")
+            logger.info("Model: %s", self.config.model_name)
+            logger.info("Input mode: %s", self._input_mode())
             logger.info("Total update steps: %s", total_update_steps)
             logger.info("Warmup steps: %s", warmup_steps)
 
@@ -301,12 +305,7 @@ class FSD50KTrainer:
                 epoch=epoch,
             )
 
-            self._save_checkpoint(
-                name=f"epoch_{epoch + 1}",
-                model=model,
-                metrics=metrics,
-            )
-
+            self._save_checkpoint(name=f"epoch_{epoch + 1}", model=model, metrics=metrics)
             self.state.epoch = epoch + 1
 
         if self.accelerator.is_main_process:
@@ -326,7 +325,6 @@ class FSD50KTrainer:
         epoch: int,
     ) -> None:
         model.train()
-
         running_loss = 0.0
         running_count = 0
         epoch_start = time.perf_counter()
@@ -335,7 +333,6 @@ class FSD50KTrainer:
             with self.accelerator.accumulate(model):
                 logits = model(batch["input_values"])
                 loss = loss_fn(logits, batch["labels"])
-
                 self.accelerator.backward(loss)
 
                 if self.accelerator.sync_gradients:
@@ -380,11 +377,7 @@ class FSD50KTrainer:
                     model.train()
 
                 if self.state.global_step % self.config.save_every_steps == 0:
-                    self._save_checkpoint(
-                        name=f"step_{self.state.global_step}",
-                        model=model,
-                        metrics=None,
-                    )
+                    self._save_checkpoint(name=f"step_{self.state.global_step}", model=model, metrics=None)
 
         elapsed = time.perf_counter() - epoch_start
 
@@ -402,7 +395,6 @@ class FSD50KTrainer:
         epoch: int,
     ) -> FSD50KMetrics:
         model.eval()
-
         losses: list[float] = []
         all_logits: list[torch.Tensor] = []
         all_labels: list[torch.Tensor] = []
@@ -414,11 +406,8 @@ class FSD50KTrainer:
             reduced_loss = self.accelerator.reduce(loss.detach(), reduction="mean")
             losses.append(float(reduced_loss.item()))
 
-            gathered_logits = self.accelerator.gather_for_metrics(logits.detach())
-            gathered_labels = self.accelerator.gather_for_metrics(batch["labels"].detach())
-
-            all_logits.append(gathered_logits.cpu())
-            all_labels.append(gathered_labels.cpu())
+            all_logits.append(self.accelerator.gather_for_metrics(logits.detach()).cpu())
+            all_labels.append(self.accelerator.gather_for_metrics(batch["labels"].detach()).cpu())
 
         logits_tensor = torch.cat(all_logits, dim=0)
         labels_tensor = torch.cat(all_labels, dim=0)
@@ -447,8 +436,11 @@ class FSD50KTrainer:
                 metrics.macro_f1,
             )
 
-            metrics_path = self.output_dir / "metrics" / f"eval_step_{step}.json"
-            save_metrics_json(metrics, metrics_path, include_per_class=True)
+            save_metrics_json(
+                metrics,
+                self.output_dir / "metrics" / f"eval_step_{step}.json",
+                include_per_class=True,
+            )
 
         if metrics.mAP > self.state.best_map:
             self.state.best_map = metrics.mAP
@@ -458,27 +450,41 @@ class FSD50KTrainer:
         return metrics
 
     def _build_model(self) -> torch.nn.Module:
-        if self.config.model_name != "scratch_cnn":
-            raise ValueError(
-                f"Unsupported model_name={self.config.model_name}. "
-                "Action 6 currently supports scratch_cnn only."
+        if self.config.model_name == "scratch_cnn":
+            return create_scratch_cnn(
+                num_labels=self.config.num_labels,
+                in_channels=1,
+                base_channels=self.config.base_channels,
+                dropout=self.config.dropout,
             )
 
-        return create_scratch_cnn(
-            num_labels=self.config.num_labels,
-            in_channels=1,
-            base_channels=self.config.base_channels,
-            dropout=self.config.dropout,
-        )
+        if self.config.model_name == "ast":
+            return create_ast_classifier(
+                pretrained_name_or_path=self.config.pretrained_name_or_path
+                or "MIT/ast-finetuned-audioset-10-10-0.4593",
+                num_labels=self.config.num_labels,
+                dropout=self.config.dropout,
+                freeze_backbone=self.config.freeze_backbone,
+            )
+
+        raise ValueError(f"Unsupported model_name={self.config.model_name}")
+
+    def _input_mode(self) -> InputMode:
+        if self.config.model_name == "scratch_cnn":
+            return "logmel"
+        if self.config.model_name == "ast":
+            return "ast"
+        raise ValueError(f"Unsupported model_name={self.config.model_name}")
 
     def _build_dataloaders(self) -> tuple[DataLoader, DataLoader]:
-        waveform_config = WaveformConfig(
+        input_mode = self._input_mode()
+
+        train_waveform_config = WaveformConfig(
             sample_rate=self.config.sample_rate,
             clip_seconds=self.config.clip_seconds,
             mono=True,
             crop_mode="random",
         )
-
         val_waveform_config = WaveformConfig(
             sample_rate=self.config.sample_rate,
             clip_seconds=self.config.clip_seconds,
@@ -486,27 +492,38 @@ class FSD50KTrainer:
             crop_mode="center",
         )
 
-        train_logmel = make_logmel_extractor(
-            sample_rate=self.config.sample_rate,
-            n_fft=self.config.n_fft,
-            hop_length=self.config.hop_length,
-            n_mels=self.config.n_mels,
-            normalize_mode=self.config.normalize_mode,  # type: ignore[arg-type]
-        )
+        train_logmel = None
+        val_logmel = None
+        ast_feature_extractor = None
 
-        val_logmel = make_logmel_extractor(
-            sample_rate=self.config.sample_rate,
-            n_fft=self.config.n_fft,
-            hop_length=self.config.hop_length,
-            n_mels=self.config.n_mels,
-            normalize_mode=self.config.normalize_mode,  # type: ignore[arg-type]
-        )
+        if input_mode == "logmel":
+            train_logmel = make_logmel_extractor(
+                sample_rate=self.config.sample_rate,
+                n_fft=self.config.n_fft,
+                hop_length=self.config.hop_length,
+                n_mels=self.config.n_mels,
+                normalize_mode=self.config.normalize_mode,  # type: ignore[arg-type]
+            )
+            val_logmel = make_logmel_extractor(
+                sample_rate=self.config.sample_rate,
+                n_fft=self.config.n_fft,
+                hop_length=self.config.hop_length,
+                n_mels=self.config.n_mels,
+                normalize_mode=self.config.normalize_mode,  # type: ignore[arg-type]
+            )
+
+        if input_mode == "ast":
+            ast_feature_extractor = AutoFeatureExtractor.from_pretrained(
+                self.config.pretrained_name_or_path or "MIT/ast-finetuned-audioset-10-10-0.4593"
+            )
 
         train_dataset = FSD50KDataset(
             manifest_path=self.config.train_manifest,
             label_map_path=self.config.label_map_path,
-            waveform_config=waveform_config,
+            waveform_config=train_waveform_config,
+            input_mode=input_mode,
             logmel_extractor=train_logmel,
+            ast_feature_extractor=ast_feature_extractor,
             training=True,
             max_samples=self.config.max_train_samples,
             waveform_augment_config=WaveformAugmentConfig(enabled=self.config.waveform_augment),
@@ -517,7 +534,9 @@ class FSD50KTrainer:
             manifest_path=self.config.val_manifest,
             label_map_path=self.config.label_map_path,
             waveform_config=val_waveform_config,
+            input_mode=input_mode,
             logmel_extractor=val_logmel,
+            ast_feature_extractor=ast_feature_extractor,
             training=False,
             max_samples=self.config.max_val_samples,
             waveform_augment_config=WaveformAugmentConfig(enabled=False),
@@ -563,7 +582,6 @@ class FSD50KTrainer:
         metrics: FSD50KMetrics | None,
     ) -> None:
         checkpoint_path = self.checkpoint_dir / name
-
         self.accelerator.wait_for_everyone()
         self.accelerator.save_state(str(checkpoint_path))
 
@@ -587,7 +605,8 @@ class FSD50KTrainer:
         step: int,
         epoch: int,
     ) -> None:
-        best_path = self.output_dir / "best" / "scratch_cnn_best.pt"
+        model_file = f"{self.config.model_name}_best.pt"
+        best_path = self.output_dir / "best" / model_file
 
         extra = {
             "epoch": epoch,
@@ -614,12 +633,9 @@ class FSD50KTrainer:
 
     def _load_checkpoint(self, checkpoint_path: str | Path) -> None:
         checkpoint = Path(checkpoint_path)
-
         if not checkpoint.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
-
         self.accelerator.load_state(str(checkpoint))
-
         if self.accelerator.is_main_process:
             logger.info("Loaded checkpoint: %s", checkpoint)
 
@@ -629,7 +645,6 @@ def load_train_config(path: str | Path | None = None) -> FSD50KTrainConfig:
         return FSD50KTrainConfig()
 
     config_path = Path(path)
-
     if not config_path.exists():
         raise FileNotFoundError(f"Training config not found: {config_path}")
 
