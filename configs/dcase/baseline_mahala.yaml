@@ -1,0 +1,5 @@
+manifest: data/manifests/dcase2024/all.csv
+output: outputs/dcase/baseline_mahala
+n_neighbors: 5
+sample_rate: 16000
+clip_seconds: 10.0
