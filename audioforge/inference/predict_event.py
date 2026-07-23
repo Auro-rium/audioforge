@@ -73,7 +73,14 @@ class EventPredictor:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
         self.model = self._build_model(config)
-        self.model.load_state_dict(payload["model_state_dict"])
+
+        # A LoRA checkpoint's state_dict only contains adapter + classifier
+        # weights (peft.PeftModel.state_dict() is reduced by design); the rest
+        # of the backbone is already correctly loaded from the pretrained
+        # checkpoint via from_pretrained, so strict=False is expected here,
+        # not a sign of a broken checkpoint.
+        use_lora = bool(config.get("use_lora", False)) and self.model_name == "ast"
+        self.model.load_state_dict(payload["model_state_dict"], strict=not use_lora)
         self.model.to(self.device).eval()
 
         self.logmel = None
@@ -109,6 +116,12 @@ class EventPredictor:
                 ),
                 num_labels=num_labels,
                 dropout=float(config.get("dropout", 0.1)),
+                freeze_backbone=bool(config.get("freeze_backbone", False)),
+                use_lora=bool(config.get("use_lora", False)),
+                lora_r=int(config.get("lora_r", 8)),
+                lora_alpha=int(config.get("lora_alpha", 16)),
+                lora_dropout=float(config.get("lora_dropout", 0.05)),
+                lora_target_modules=tuple(config.get("lora_target_modules", ["query", "value"])),
             )
         raise ValueError(f"Unsupported checkpoint model_name: {self.model_name}")
 

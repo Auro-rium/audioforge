@@ -7,14 +7,12 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from audioforge.inference.predict_event import EventPredictor
-from audioforge.inference.predict_anomaly import predict_anomaly
 
 
 def create_app(
     *,
     checkpoint_path: str | Path | None = None,
     label_map_path: str | Path | None = None,
-    anomaly_model_path: str | Path | None = None,
     device: str = "auto",
 ) -> FastAPI:
     """Create the AudioForge HTTP API.
@@ -24,7 +22,6 @@ def create_app(
     """
     checkpoint = checkpoint_path or os.environ.get("AUDIOFORGE_EVENT_CHECKPOINT")
     label_map = label_map_path or os.environ.get("AUDIOFORGE_LABEL_MAP")
-    anomaly_model = anomaly_model_path or os.environ.get("AUDIOFORGE_ANOMALY_MODEL")
     predictor = None
     if checkpoint and label_map:
         predictor = EventPredictor(checkpoint, label_map, device=device)
@@ -36,7 +33,6 @@ def create_app(
         return {
             "status": "ok",
             "model_loaded": predictor is not None,
-            "anomaly_model_loaded": anomaly_model is not None and Path(anomaly_model).exists(),
         }
 
     @app.post("/predict/event")
@@ -57,22 +53,6 @@ def create_app(
             "filename": file.filename,
             "predictions": [item.__dict__ for item in predictions],
         }
-
-    @app.post("/predict/anomaly")
-    async def predict_anomaly_endpoint(file: UploadFile = File(...), method: str = "ensemble") -> dict:
-        if anomaly_model is None:
-            raise HTTPException(status_code=503, detail="Anomaly model is not configured")
-        if method not in {"knn", "mahalanobis", "ensemble"}:
-            raise HTTPException(status_code=400, detail="Invalid anomaly scoring method")
-        suffix = Path(file.filename or "audio.wav").suffix or ".wav"
-        try:
-            with tempfile.NamedTemporaryFile(suffix=suffix) as temporary:
-                temporary.write(await file.read())
-                temporary.flush()
-                score = predict_anomaly(temporary.name, anomaly_model, method=method)
-        except (FileNotFoundError, ValueError, RuntimeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"filename": file.filename, "method": method, "anomaly_score": score}
 
     return app
 

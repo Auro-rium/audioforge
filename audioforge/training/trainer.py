@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -37,6 +37,7 @@ from audioforge.training.distributed import (
     save_model_state,
     setup_torch_runtime,
 )
+from audioforge.training.losses import build_loss_fn
 from audioforge.utils.logging import configure_logging, get_logger
 from audioforge.utils.seed import seed_everything
 
@@ -60,7 +61,17 @@ class FSD50KTrainConfig:
     num_labels: int = 200
     base_channels: int = 32
     dropout: float = 0.2
+
+    # AST-only. use_lora=True (default) is the recommended path: LoRA adapters
+    # on attention query/value projections plus a fully-trained classifier
+    # head, backbone otherwise frozen. freeze_backbone=True is a full-freeze
+    # linear probe; both False is full fine-tuning of all AST weights.
     freeze_backbone: bool = False
+    use_lora: bool = True
+    lora_r: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.05
+    lora_target_modules: list[str] = field(default_factory=lambda: ["query", "value"])
 
     sample_rate: int = 16_000
     clip_seconds: float = 10.0
@@ -81,6 +92,8 @@ class FSD50KTrainConfig:
     max_grad_norm: float = 1.0
 
     threshold: float = 0.5
+    loss_fn: str = "bce"
+    focal_gamma: float = 2.0
     eval_every_steps: int = 500
     save_every_steps: int = 1000
     log_every_steps: int = 25
@@ -248,6 +261,8 @@ class FSD50KTrainer:
 
     def train(self) -> None:
         model = self._build_model()
+        self._log_trainable_parameters(model)
+
         optimizer = torch.optim.AdamW(
             [p for p in model.parameters() if p.requires_grad],
             lr=self.config.learning_rate,
@@ -265,7 +280,7 @@ class FSD50KTrainer:
             num_training_steps=total_update_steps,
         )
 
-        loss_fn = nn.BCEWithLogitsLoss()
+        loss_fn = build_loss_fn(self.config.loss_fn, focal_gamma=self.config.focal_gamma)  # type: ignore[arg-type]
 
         model, optimizer, train_loader, val_loader, scheduler = self.accelerator.prepare(
             model,
@@ -465,9 +480,26 @@ class FSD50KTrainer:
                 num_labels=self.config.num_labels,
                 dropout=self.config.dropout,
                 freeze_backbone=self.config.freeze_backbone,
+                use_lora=self.config.use_lora,
+                lora_r=self.config.lora_r,
+                lora_alpha=self.config.lora_alpha,
+                lora_dropout=self.config.lora_dropout,
+                lora_target_modules=self.config.lora_target_modules,
             )
 
         raise ValueError(f"Unsupported model_name={self.config.model_name}")
+
+    def _log_trainable_parameters(self, model: torch.nn.Module) -> None:
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in model.parameters())
+
+        if self.accelerator.is_main_process:
+            logger.info(
+                "Trainable parameters: %s / %s (%.2f%%)",
+                f"{trainable:,}",
+                f"{total:,}",
+                100.0 * trainable / max(total, 1),
+            )
 
     def _input_mode(self) -> InputMode:
         if self.config.model_name == "scratch_cnn":

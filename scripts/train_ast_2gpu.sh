@@ -44,16 +44,25 @@ from transformers import AutoFeatureExtractor
 
 cfg = load_train_config("configs/fsd50k/ast_2gpu.yaml")
 print("[ast] loading:", cfg.pretrained_name_or_path)
+print("[ast] use_lora:", cfg.use_lora, "freeze_backbone:", cfg.freeze_backbone)
 
 _ = AutoFeatureExtractor.from_pretrained(cfg.pretrained_name_or_path)
 model = create_ast_classifier(
     pretrained_name_or_path=cfg.pretrained_name_or_path,
     num_labels=cfg.num_labels,
     dropout=cfg.dropout,
-    freeze_backbone=True,
+    freeze_backbone=cfg.freeze_backbone,
+    use_lora=cfg.use_lora,
+    lora_r=cfg.lora_r,
+    lora_alpha=cfg.lora_alpha,
+    lora_dropout=cfg.lora_dropout,
+    lora_target_modules=cfg.lora_target_modules,
 )
 
+trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+total = sum(p.numel() for p in model.parameters())
 print("[ast] model load ok:", model.__class__.__name__)
+print(f"[ast] trainable params: {trainable:,} / {total:,} ({100.0 * trainable / total:.2f}%)")
 PY
 
 if command -v nvidia-smi >/dev/null 2>&1; then

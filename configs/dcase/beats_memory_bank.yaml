@@ -1,5 +1,0 @@
-manifest: data/manifests/dcase2024/all.csv
-output: outputs/dcase/memory_bank
-n_neighbors: 10
-sample_rate: 16000
-clip_seconds: 10.0

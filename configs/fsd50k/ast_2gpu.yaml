@@ -11,6 +11,11 @@ model:
   num_labels: 200
   dropout: 0.1
   freeze_backbone: false
+  use_lora: true
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  lora_target_modules: [query, value]
 
 features:
   sample_rate: 16000
@@ -25,7 +30,7 @@ training:
   batch_size: 4
   eval_batch_size: 8
   num_workers: 8
-  learning_rate: 0.00002
+  learning_rate: 0.0002
   weight_decay: 0.01
   warmup_ratio: 0.05
   gradient_accumulation_steps: 4

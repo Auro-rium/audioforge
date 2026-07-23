@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import torch
 from torch import nn
+
+LossName = Literal["bce", "focal"]
 
 
 def multilabel_bce_loss(
@@ -34,3 +38,20 @@ class FocalBCEWithLogitsLoss(nn.Module):
         probabilities = torch.sigmoid(logits)
         p_t = probabilities * targets + (1 - probabilities) * (1 - targets)
         return ((1 - p_t).pow(self.gamma) * bce).mean()
+
+
+def build_loss_fn(
+    name: LossName = "bce",
+    *,
+    focal_gamma: float = 2.0,
+    pos_weight: torch.Tensor | None = None,
+) -> nn.Module:
+    """Build the FSD50K multilabel loss selected by training config."""
+
+    if name == "bce":
+        return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    if name == "focal":
+        return FocalBCEWithLogitsLoss(gamma=focal_gamma, pos_weight=pos_weight)
+
+    raise ValueError(f"Unsupported loss name: {name}")

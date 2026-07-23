@@ -111,8 +111,19 @@ def compute_per_class_average_precision(
     scores: torch.Tensor | np.ndarray | list[Any],
     targets: torch.Tensor | np.ndarray | list[Any],
     *,
+    threshold: float = 0.5,
     label_names: list[str] | None = None,
 ) -> list[PerClassMetrics]:
+    """Standalone per-class AP/precision/recall/F1, independent of compute_fsd50k_metrics.
+
+    ``scores`` must already be probabilities in [0, 1] (apply sigmoid first if
+    scoring from logits) since AP is threshold-independent but precision/recall/F1
+    are computed at ``threshold``.
+    """
+
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("threshold must be between 0 and 1")
+
     scores_np, targets_np = _validate_multilabel_arrays(
         _to_numpy(scores),
         _to_numpy(targets),
@@ -125,7 +136,7 @@ def compute_per_class_average_precision(
 
     per_class: list[PerClassMetrics] = []
 
-    predicted = np.zeros_like(targets_np)
+    predicted = (scores_np >= threshold).astype(np.int32)
 
     precision, recall, f1, support = precision_recall_fscore_support(
         targets_np,
