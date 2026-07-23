@@ -5,6 +5,23 @@ classification. It is built to compare models under one explicit data,
 feature, training, evaluation, and artifact pipeline rather than hide the
 experiment inside a notebook.
 
+## Prerequisites
+
+`torchaudio.load` (used throughout `audioforge.features.waveform`) requires
+the `torchcodec` package, which in turn requires **FFmpeg installed at the
+OS level** (not pip-installable) -- on Debian/Ubuntu:
+
+```bash
+sudo apt-get install -y ffmpeg
+```
+
+Without this, `torchaudio.load` fails with
+`ModuleNotFoundError: No module named 'torchcodec'` (if torchcodec itself
+is missing) or `RuntimeError: Could not load libtorchcodec` (if FFmpeg's
+shared libraries aren't present) even though `uv sync`/`pip install`
+completes without error -- this is an OS package, not a Python one, and
+`uv`/`pip` have no way to install or check for it.
+
 ## Supported workflows
 
 ### FSD50K multilabel classification

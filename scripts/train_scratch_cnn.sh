@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 
 CONFIG_PATH="${AUDIOFORGE_CONFIG:-configs/fsd50k/scratch_cnn.yaml}"
 OUTPUT_DIR="${AUDIOFORGE_OUTPUT_DIR:-outputs/fsd50k/scratch_cnn_full}"
-NUM_PROCESSES="${AUDIOFORGE_NUM_PROCESSES:-2}"
+NUM_PROCESSES="${AUDIOFORGE_NUM_PROCESSES:-1}"
 MIXED_PRECISION="${AUDIOFORGE_MIXED_PRECISION:-fp16}"
 
 echo "[scratch] AudioForge full Scratch CNN baseline"

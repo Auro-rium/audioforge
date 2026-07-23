@@ -5,10 +5,10 @@ cd "$(dirname "$0")/.."
 
 CONFIG_PATH="${AUDIOFORGE_CONFIG:-configs/fsd50k/ast_2gpu.yaml}"
 OUTPUT_DIR="${AUDIOFORGE_OUTPUT_DIR:-outputs/fsd50k/ast_2gpu}"
-NUM_PROCESSES="${AUDIOFORGE_NUM_PROCESSES:-2}"
+NUM_PROCESSES="${AUDIOFORGE_NUM_PROCESSES:-1}"
 MIXED_PRECISION="${AUDIOFORGE_MIXED_PRECISION:-fp16}"
 
-echo "[ast] AudioForge AST 2-GPU fine-tune"
+echo "[ast] AudioForge AST fine-tune (num_processes=${NUM_PROCESSES})"
 echo "[ast] config: ${CONFIG_PATH}"
 echo "[ast] output: ${OUTPUT_DIR}"
 echo "[ast] num_processes: ${NUM_PROCESSES}"
@@ -111,4 +111,4 @@ python scripts/make_fsd50k_benchmark_row.py \
 
 cat reports/fsd50k_ast_row.md
 
-echo "[ast] AST 2-GPU FINE-TUNE PASSED ✅"
+echo "[ast] AST FINE-TUNE PASSED ✅"
