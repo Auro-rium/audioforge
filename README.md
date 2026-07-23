@@ -55,6 +55,33 @@ AUDIOFORGE_LABEL_MAP=... \
 python -m audioforge.serving.api
 ```
 
+## Publishing to the Hugging Face Hub
+
+Once a checkpoint's `best_metrics.json` looks good, publish it with
+`scripts/export_hf.py`. Authenticate first (`huggingface-cli login` or an
+`HF_TOKEN` env var on the machine you run this from -- never pass a token as
+a CLI argument or paste it into a shared terminal/chat):
+
+```bash
+# scratch_cnn: custom architecture, so this stages config.json +
+# model.safetensors + a README with a loading snippet before pushing.
+python scripts/export_hf.py \
+  --checkpoint outputs/fsd50k/scratch_cnn_full/best/scratch_cnn_best.pt \
+  --model-type scratch_cnn \
+  --repo-id your-hf-username/audioforge-scratch-cnn-fsd50k
+
+# ast: pushes through peft's/transformers' own push_to_hub, so LoRA
+# checkpoints publish as a small adapter-only repo pointing back at the
+# base AST model, not a full merged copy.
+python scripts/export_hf.py \
+  --checkpoint outputs/fsd50k/ast_2gpu/best/ast_best.pt \
+  --model-type ast \
+  --repo-id your-hf-username/audioforge-ast-lora-fsd50k
+```
+
+Add `--dry-run` to build/validate the export locally (and, for `scratch_cnn`,
+catch any checkpoint/config mismatch) without pushing anything.
+
 ## Reproducibility and artifacts
 
 Configuration files, manifests, label maps, distributed-runtime metadata,

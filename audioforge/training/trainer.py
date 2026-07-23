@@ -377,6 +377,13 @@ class FSD50KTrainer:
                             avg_loss,
                             lr,
                         )
+                        self._append_training_history(
+                            kind="train_step",
+                            epoch=epoch + 1,
+                            step=self.state.global_step,
+                            loss=avg_loss,
+                            lr=lr,
+                        )
 
                     running_loss = 0.0
                     running_count = 0
@@ -457,6 +464,16 @@ class FSD50KTrainer:
                 include_per_class=True,
             )
 
+            self._append_training_history(
+                kind="eval",
+                epoch=epoch + 1,
+                step=step,
+                loss=mean_loss,
+                mAP=metrics.mAP,
+                micro_f1=metrics.micro_f1,
+                macro_f1=metrics.macro_f1,
+            )
+
         if metrics.mAP > self.state.best_map:
             self.state.best_map = metrics.mAP
             self._save_best_model(model=model, metrics=metrics, step=step, epoch=epoch)
@@ -500,6 +517,40 @@ class FSD50KTrainer:
                 f"{total:,}",
                 100.0 * trainable / max(total, 1),
             )
+
+    def _append_training_history(
+        self,
+        *,
+        kind: Literal["train_step", "eval"],
+        epoch: int,
+        step: int,
+        loss: float,
+        **extra: Any,
+    ) -> None:
+        """Append one plot-ready record to training_history.jsonl.
+
+        AST-only: scratch_cnn is a quick baseline and doesn't need this: its
+        text log + eval_step_N.json/best_metrics.json are already enough to
+        tell whether it worked. AST runs are the ones worth a proper training-
+        curve writeup later, so this keeps loss (train_step) and mAP/F1 (eval)
+        in one file, on a shared step axis, instead of regex-scraping stdout.
+        """
+
+        if self.config.model_name != "ast" or not self.accelerator.is_main_process:
+            return
+
+        entry = {
+            "kind": kind,
+            "epoch": epoch,
+            "step": step,
+            "loss": loss,
+            "wall_clock": time.time(),
+            **extra,
+        }
+
+        history_path = self.output_dir / "training_history.jsonl"
+        with history_path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(entry) + "\n")
 
     def _input_mode(self) -> InputMode:
         if self.config.model_name == "scratch_cnn":
