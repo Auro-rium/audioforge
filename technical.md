@@ -720,14 +720,22 @@ above infrastructure work started. Key fixes:
 
 ## 11. Current status
 
-As of this document: the codebase is fixed, LoRA-enabled, and has real
-data-download/deployment tooling ready, but **no model has actually been
-trained yet** — no real dataset is present locally, no checkpoints exist,
-`reports/` is empty. The AWS GPU instance is not yet launched (blocked on
-the service quota requests in §9.4 clearing). Next real steps, in order:
-quota approval → launch a Spot `g5.xlarge`/`g5.2xlarge` → run
-`scripts/download_fsd50k.sh` → `scripts/prepare_fsd50k.py` →
-`scripts/smoke_train.sh` (validate the fixes actually work on real
-hardware before committing to a full run) → full `scratch_cnn` and
-`ast`(+LoRA) training runs → `scripts/export_hf.py` to publish both to the
-Hugging Face Hub.
+Both models are **fully trained and published** on the Hugging Face Hub:
+
+- **`scratch_cnn`**: 2,412,008 parameters (100% trainable). Trained on FSD50K
+  (36,796 train / 4,170 val / 10,231 test clips, 200 labels) for 5 epochs
+  (~22.4 minutes wall-clock on a single A10G GPU). Final mAP: **0.3020**
+  (micro-F1: 0.4260, macro-F1: 0.1183). Published at
+  https://huggingface.co/auro-rirum/audioforge-scratch-cnn-fsd50k
+
+- **`ast` + LoRA**: 86,792,848 total parameters, 450,248 trainable (0.52%),
+  LoRA rank-8 on attention q_proj/v_proj + fully-trained classifier head.
+  Trained on the same FSD50K split for 5 epochs (~71 minutes wall-clock on
+  a single A10G GPU). Best checkpoint at step 10,000 of 11,500. Final mAP:
+  **0.5567** (micro-F1: 0.6443, macro-F1: 0.3843). Published at
+  https://huggingface.co/auro-rirum/audioforge-ast-fsd50k
+
+Training details, metrics, and benchmark rows are committed in `reports/`
+(`scratch_cnn_report.md` and `ast_report.md`). This document may lag behind
+the very latest state — consult those reports and the Hugging Face Hub for
+the most current information.

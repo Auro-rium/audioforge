@@ -30,13 +30,18 @@ The FSD50K path prepares manifests and a stable 200-class label map, loads and
 resamples audio to fixed-length mono clips, creates normalized log-Mel features,
 and optionally applies waveform and SpecAugment transforms. It supports:
 
-- `scratch_cnn`: a transparent CNN baseline trained from random initialization;
+- `scratch_cnn`: a transparent CNN baseline (2.4M parameters) trained from
+  random initialization. Published checkpoint at
+  https://huggingface.co/auro-rirum/audioforge-scratch-cnn-fsd50k with final
+  mAP 0.3020 on FSD50K.
 - `ast`: transfer learning from the Hugging Face Audio Spectrogram Transformer,
   adapted via LoRA (`use_lora: true`, default) by training rank-`lora_r`
   adapters on the attention query/value projections plus the classifier head
   while the rest of the ~86M pretrained AST parameters stay frozen. Full
   fine-tuning and full-freeze linear probing remain available as `use_lora:
   false` + `freeze_backbone: false`/`true` respectively, mainly for comparison.
+  Published checkpoint at https://huggingface.co/auro-rirum/audioforge-ast-fsd50k
+  with final mAP 0.5567 on FSD50K.
 
 Both models train with a multilabel loss selected via the `loss_fn` training
 config key: `bce` (default, `BCEWithLogitsLoss`) or `focal` (class-imbalance-aware,
@@ -74,10 +79,17 @@ python -m audioforge.serving.api
 
 ## Publishing to the Hugging Face Hub
 
-Once a checkpoint's `best_metrics.json` looks good, publish it with
-`scripts/export_hf.py`. Authenticate first (`huggingface-cli login` or an
-`HF_TOKEN` env var on the machine you run this from -- never pass a token as
-a CLI argument or paste it into a shared terminal/chat):
+Both final models are now published on the Hugging Face Hub:
+
+- **scratch_cnn**: https://huggingface.co/auro-rirum/audioforge-scratch-cnn-fsd50k
+  (final mAP 0.3020)
+- **ast** (LoRA): https://huggingface.co/auro-rirum/audioforge-ast-fsd50k
+  (final mAP 0.5567)
+
+To publish a checkpoint locally, use `scripts/export_hf.py`. Authenticate
+first (`huggingface-cli login` or an `HF_TOKEN` env var on the machine you
+run this from -- never pass a token as a CLI argument or paste it into a
+shared terminal/chat):
 
 ```bash
 # scratch_cnn: custom architecture, so this stages config.json +
@@ -93,7 +105,7 @@ python scripts/export_hf.py \
 python scripts/export_hf.py \
   --checkpoint outputs/fsd50k/ast_2gpu/best/ast_best.pt \
   --model-type ast \
-  --repo-id your-hf-username/audioforge-ast-lora-fsd50k
+  --repo-id your-hf-username/audioforge-ast-fsd50k
 ```
 
 Add `--dry-run` to build/validate the export locally (and, for `scratch_cnn`,
