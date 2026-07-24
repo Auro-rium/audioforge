@@ -6,11 +6,13 @@ import torch
 from torch import nn
 from transformers import AutoConfig, AutoModelForAudioClassification
 
-# ASTSelfAttention's query/value projections are the standard LoRA target for
-# ViT-family encoders (AST is a ViT variant). Leaving key untouched is the
-# common LoRA-on-attention default; it captures most of the benefit at lower
-# adapter parameter count.
-DEFAULT_LORA_TARGET_MODULES = ("query", "value")
+# This transformers version's ASTAttention uses q_proj/k_proj/v_proj/o_proj
+# naming (verified directly against the loaded module tree, not the older
+# query/key/value convention some ViT implementations use). q_proj/v_proj is
+# the standard LoRA target for ViT-family encoders; leaving k_proj/o_proj
+# untouched is the common LoRA-on-attention default, capturing most of the
+# benefit at lower adapter parameter count.
+DEFAULT_LORA_TARGET_MODULES = ("q_proj", "v_proj")
 
 
 @dataclass(frozen=True)

@@ -2,8 +2,8 @@ data:
   train_manifest: data/manifests/fsd50k/train.csv
   val_manifest: data/manifests/fsd50k/val.csv
   label_map_path: data/manifests/fsd50k/label_map.json
-  max_train_samples:
-  max_val_samples:
+  max_train_samples: 16
+  max_val_samples: 8
 
 model:
   model_name: ast
@@ -26,28 +26,28 @@ features:
   normalize_mode: per_sample
 
 training:
-  epochs: 5
-  batch_size: 4
-  eval_batch_size: 8
-  num_workers: 8
+  epochs: 1
+  batch_size: 2
+  eval_batch_size: 2
+  num_workers: 0
   learning_rate: 0.0002
   weight_decay: 0.01
-  warmup_ratio: 0.05
-  gradient_accumulation_steps: 4
-  mixed_precision: "fp16"
+  warmup_ratio: 0.0
+  gradient_accumulation_steps: 1
+  mixed_precision: "no"
   max_grad_norm: 1.0
   threshold: 0.5
-  eval_every_steps: 1000
-  save_every_steps: 2000
-  log_every_steps: 25
+  eval_every_steps: 999999
+  save_every_steps: 999999
+  log_every_steps: 1
 
 runtime:
-  output_dir: outputs/fsd50k/ast_2gpu
-  checkpoint_dir: outputs/fsd50k/ast_2gpu/checkpoints
+  output_dir: outputs/smoke_ast
+  checkpoint_dir: outputs/smoke_ast/checkpoints
   seed: 42
   deterministic: false
   log_level: INFO
 
 augmentation:
-  waveform_augment: true
+  waveform_augment: false
   spec_augment: false

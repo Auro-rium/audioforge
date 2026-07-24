@@ -357,17 +357,22 @@ existing representations, not a full re-derivation of every weight from
 scratch — so a rank-8 update captures most of the useful adaptation at a
 tiny fraction of the parameter count of the full matrix.
 
-**Applied here**: `target_modules=["query", "value"]` — the attention
+**Applied here**: `target_modules=["q_proj", "v_proj"]` — the attention
 mechanism's query and value projection matrices in each of the 12 encoder
-layers (the standard LoRA-on-ViT/BERT-family default; leaving `key`
-untouched is a common choice that captures most of the benefit at lower
-adapter parameter count). `modules_to_save=["classifier"]` tells `peft` to
-keep the new classification head *fully* trainable (not LoRA-adapted, not
-frozen) alongside the adapters, since it's a brand-new randomly-initialized
-head with no pretrained values to preserve.
+layers (the standard LoRA-on-ViT/BERT-family default; leaving `k_proj`/
+`o_proj` untouched is a common choice that captures most of the benefit at
+lower adapter parameter count). Note: this installed `transformers` version
+names AST's attention projections `q_proj`/`k_proj`/`v_proj`/`o_proj`, not
+the older `query`/`key`/`value` convention some ViT implementations use —
+verified directly against the loaded model's module tree after the AST
+smoke test caught a mismatch (see Engineering history).
+`modules_to_save=["classifier"]` tells `peft` to keep the new
+classification head *fully* trainable (not LoRA-adapted, not frozen)
+alongside the adapters, since it's a brand-new randomly-initialized head
+with no pretrained values to preserve.
 
 **Parameter count, concretely**: per adapted module, LoRA adds
-`2 × r × hidden = 2 × 8 × 768 = 12,288` params. With query+value adapted
+`2 × r × hidden = 2 × 8 × 768 = 12,288` params. With q_proj+v_proj adapted
 across 12 layers, that's 24 adapted modules → `24 × 12,288 ≈ 295K` LoRA
 params. The classifier head (768→200 linear + LayerNorm) adds ≈155K. Total
 trainable ≈ **450K out of ~87M — about 0.5%** of the model.
@@ -697,6 +702,19 @@ above infrastructure work started. Key fixes:
   disk each call — fixed (before removal made it moot) by caching a loaded
   predictor once at app startup, the same pattern `EventPredictor` already
   used correctly.
+- **LoRA `target_modules=["query", "value"]` matched nothing and crashed**:
+  caught live by running a dedicated AST smoke test
+  (`configs/fsd50k/smoke_ast.yaml` / `scripts/smoke_train_ast.sh`, added
+  specifically because the original smoke config only ever exercised
+  `scratch_cnn`) before committing GPU hours to the full ~3-4 hour AST run.
+  `peft` raised `ValueError: No modules were targeted for adaptation`. Root
+  cause: this installed `transformers` version (5.14.1) implements AST's
+  attention as `q_proj`/`k_proj`/`v_proj`/`o_proj`, not the older
+  `query`/`key`/`value` naming some ViT implementations use — verified
+  directly by dumping the loaded model's `named_modules()`. Fixed by
+  changing `DEFAULT_LORA_TARGET_MODULES` in `audioforge/models/ast.py` and
+  both `configs/fsd50k/ast_2gpu.yaml` / `smoke_ast.yaml` to
+  `["q_proj", "v_proj"]`.
 
 ---
 
