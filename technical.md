@@ -3,9 +3,11 @@
 This document explains, in depth, what AudioForge is, how every piece of it
 works, why it's built the way it is, and the full infrastructure/deployment
 path around it. It exists as a single reference: architecture, math,
-training mechanics, evaluation, serving, cloud infrastructure, and the
-engineering decisions (and fixes) that got the codebase to its current
-state.
+training mechanics, evaluation, Hugging Face Hub publishing, cloud
+infrastructure, and the engineering decisions (and fixes) that got the
+codebase to its current state. There is no inference or serving layer in
+this repository by design — it covers data prep through training,
+evaluation, and publishing trained checkpoints to the Hub.
 
 ---
 
@@ -27,7 +29,7 @@ pipeline, deliberately kept comparable:
   adaptation buy you" comparison.
 
 The project previously also included a DCASE machine-anomaly-detection
-path; it was removed entirely (see §11) to focus solely on FSD50K
+path; it was removed entirely (see §9) to focus solely on FSD50K
 classification.
 
 ---
@@ -54,11 +56,6 @@ audioforge/
   evaluation/
     fsd50k_metrics.py    # mAP, per-class AP, precision/recall/F1
     benchmark_table.py   # render benchmark rows as markdown
-  inference/
-    predict_event.py  # EventPredictor: load a checkpoint, run inference
-  serving/
-    api.py           # FastAPI: /health, /predict/event
-    gradio_app.py    # optional Gradio demo UI
   utils/
     checkpoint.py, device.py, logging.py, seed.py
 
@@ -395,7 +392,7 @@ would otherwise be needed for the full 87M params) but it's a modest
 saving, not the dramatic 10x+ reduction associated with LoRA on 7B+
 parameter LLMs, because activation memory (which scales with batch size ×
 sequence length × depth, not with how many params are frozen) dominates
-total memory regardless of whether LoRA is used — see §9.1 for the exact
+total memory regardless of whether LoRA is used — see §8.1 for the exact
 numbers.
 
 ---
@@ -437,14 +434,14 @@ support comes from configuration, not hand-rolled DDP code:
 - Best-model tracking by validation mAP: whenever a new best is found,
   saves an unwrapped, portable model checkpoint (just
   `model_state_dict` + embedded training config + metrics — this is the
-  file `inference/predict_event.py` and `scripts/export_hf.py` actually
-  consume, distinct from the full Accelerate resume-state checkpoints).
+  file `scripts/export_hf.py` actually consumes, distinct from the full
+  Accelerate resume-state checkpoints).
 
 ### 5.3 Config (`FSD50KTrainConfig`)
 
 A flat dataclass (not the pydantic `AudioForgeConfig` that used to exist —
-that system was built but never actually wired into training/inference/
-serving anywhere, so it was removed; see §11). YAML configs under
+that system was built but never actually wired into training, inference,
+or serving anywhere, so it was removed; see §9). YAML configs under
 `configs/fsd50k/` use nested sections (`data:`, `model:`, `features:`,
 `training:`, `runtime:`, `augmentation:`) purely for human readability —
 `FSD50KTrainConfig.from_dict()` flattens them and filters to known
@@ -485,26 +482,7 @@ enough to tell whether it worked — no need for the extra bookkeeping.
 
 ---
 
-## 7. Inference & Serving
-
-`inference/predict_event.py`'s `EventPredictor` loads a checkpoint and
-reconstructs the exact model + preprocessing it was trained with, because
-every checkpoint **embeds its own training config** (`extra.config` in the
-checkpoint payload) — no separate deployment config file needed beyond the
-label map. It correctly distinguishes LoRA checkpoints (reduced state dict
-containing only adapter + classifier weights, loaded with `strict=False`
-since the rest of the backbone is already correctly loaded from the
-pretrained checkpoint via `from_pretrained`) from full-fine-tune/frozen
-checkpoints (complete state dict, loaded `strict=True`).
-
-`serving/api.py` is a FastAPI app (`/health`, `/predict/event`) that loads
-the model exactly once at app startup (not per-request) and serves
-requests against that single loaded instance. `serving/gradio_app.py` is
-an optional demo UI wrapping the same predictor.
-
----
-
-## 8. Publishing to the Hugging Face Hub (`scripts/export_hf.py`)
+## 7. Publishing to the Hugging Face Hub (`scripts/export_hf.py`)
 
 Two different export paths, because the two models have fundamentally
 different relationships to the Hub's tooling:
@@ -543,9 +521,9 @@ shell history or logs.
 
 ---
 
-## 9. AWS infrastructure
+## 8. AWS infrastructure
 
-### 9.1 VRAM sizing — the actual calculation, not a guess
+### 8.1 VRAM sizing — the actual calculation, not a guess
 
 Three things consume GPU memory during training: **weights** (must exist
 for the forward pass regardless of what's frozen), **gradients + optimizer
@@ -588,7 +566,7 @@ term further via PyTorch's fused kernels — a lever not yet used here.)
 stop. Any current-generation data-center GPU has enormous headroom over
 what's actually required.
 
-### 9.2 Instance choice
+### 8.2 Instance choice
 
 Given VRAM isn't the constraint, instance choice comes down to $/hour and
 one AWS-specific wrinkle: GPU instance families jump straight from 1 GPU to
@@ -599,7 +577,7 @@ small its footprint is, the chosen instance is a **single-GPU
 `g5.xlarge`/`g5.2xlarge` (1× A10G, 24GB)** — comfortable headroom, and
 enough room to raise batch size well past the current 4 if desired.
 
-### 9.3 Spot vs. on-demand economics
+### 8.3 Spot vs. on-demand economics
 
 Live Spot pricing (pulled directly via `aws ec2 describe-spot-price-history`,
 not estimated) for `g5.xlarge` in `us-east-1` varies significantly by
@@ -614,7 +592,7 @@ The trainer already checkpoints periodically and supports
 `--resume-from`, so a Spot interruption is a resume, not a lost run — Spot
 was chosen for the actual training cost.
 
-### 9.4 Service quotas — why this blocked launch entirely at first
+### 8.4 Service quotas — why this blocked launch entirely at first
 
 New/low-GPU-usage AWS accounts default to a **vCPU quota of 0** for the
 G/VT instance family — `g5.xlarge` fails to launch with a quota error
@@ -640,7 +618,7 @@ Both requests landed in `CASE_OPENED` (manual review) rather than
 auto-approving, common for GPU quota bumps on accounts without prior GPU
 usage history.
 
-### 9.5 Credentials — a live incident, handled
+### 8.5 Credentials — a live incident, handled
 
 Mid-setup, a long-lived IAM access key (`AKIA...`-prefixed) was pasted
 directly into chat. That is treated as a compromised credential
@@ -657,7 +635,7 @@ before assuming a working credential is for the right account.
 
 ---
 
-## 10. Engineering history — what was fixed and why
+## 9. Engineering history — what was fixed and why
 
 The codebase went through a full audit-and-repair pass before any of the
 above infrastructure work started. Key fixes:
@@ -696,7 +674,7 @@ above infrastructure work started. Key fixes:
   method before removal made the question moot.
 - **Empty, unreferenced stub files removed**: `data/splits.py`,
   `models/heads.py`, `scripts/export_hf.py` (the last one has since been
-  properly (re)written with real functionality — see §8).
+  properly (re)written with real functionality — see §7).
 - **DCASE inference served up a fresh k-NN refit on every single API
   request** in `serving/api.py`, rebuilding the nearest-neighbor index from
   disk each call — fixed (before removal made it moot) by caching a loaded
@@ -715,10 +693,18 @@ above infrastructure work started. Key fixes:
   changing `DEFAULT_LORA_TARGET_MODULES` in `audioforge/models/ast.py` and
   both `configs/fsd50k/ast_2gpu.yaml` / `smoke_ast.yaml` to
   `["q_proj", "v_proj"]`.
+- **The inference and serving layer was removed entirely** (`audioforge/inference/`,
+  `audioforge/serving/`, and the `fastapi`/`gradio`/`uvicorn`/`prometheus-client`
+  dependencies they pulled in), per a deliberate scope decision to keep this
+  repository focused on data prep, training, evaluation, and publishing to
+  the Hugging Face Hub — not on running a deployed service. The unused
+  Prometheus instrumentation in `utils/logging.py` (a metrics-server hook
+  that was never actually invoked with `prometheus_enabled=True` anywhere
+  in the codebase) was removed at the same time for the same reason.
 
 ---
 
-## 11. Current status
+## 10. Current status
 
 Both models are **fully trained and published** on the Hugging Face Hub:
 

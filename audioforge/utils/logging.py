@@ -7,40 +7,14 @@ import time
 from contextvars import ContextVar
 from typing import Any
 
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
-
 _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 _run_id: ContextVar[str | None] = ContextVar("run_id", default=None)
 
-LOG_EVENTS_TOTAL = Counter(
-    "audioforge_log_events_total",
-    "Total number of log events emitted by AudioForge.",
-    ["level"],
-)
-
-TRAINING_STEP_DURATION_SECONDS = Histogram(
-    "audioforge_training_step_duration_seconds",
-    "Training step duration in seconds.",
-)
-
-ACTIVE_RUNS = Gauge(
-    "audioforge_active_runs",
-    "Number of active AudioForge runs.",
-)
-
 
 class JsonFormatter(logging.Formatter):
-    """Small structured JSON formatter.
-
-    Grafana is not a logger. Prometheus is not a logger either.
-    This gives us JSON logs that can later be shipped to Loki/Grafana,
-    while Prometheus metrics expose counters/histograms separately.
-    Tiny distinction, massive reduction in future suffering.
-    """
+    """Small structured JSON formatter."""
 
     def format(self, record: logging.LogRecord) -> str:
-        LOG_EVENTS_TOTAL.labels(level=record.levelname).inc()
-
         payload: dict[str, Any] = {
             "timestamp": self.formatTime(record, self.datefmt),
             "level": record.levelname,
@@ -76,21 +50,12 @@ class PlainFormatter(logging.Formatter):
         return prefix + record.getMessage()
 
 
-def configure_logging(
-    level: str = "INFO",
-    json_logs: bool = True,
-    prometheus_enabled: bool = False,
-    prometheus_host: str = "0.0.0.0",
-    prometheus_port: int = 9090,
-) -> None:
+def configure_logging(level: str = "INFO", json_logs: bool = True) -> None:
     """Configure app-wide logging.
 
     Args:
         level: Python logging level.
         json_logs: Use structured JSON logs if true.
-        prometheus_enabled: Start Prometheus metrics server if true.
-        prometheus_host: Metrics server host.
-        prometheus_port: Metrics server port.
     """
 
     root = logging.getLogger()
@@ -111,18 +76,6 @@ def configure_logging(
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
 
-    if prometheus_enabled:
-        start_http_server(port=prometheus_port, addr=prometheus_host)
-        get_logger(__name__).info(
-            "Prometheus metrics server started",
-            extra={
-                "extra_fields": {
-                    "host": prometheus_host,
-                    "port": prometheus_port,
-                }
-            },
-        )
-
 
 def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
@@ -137,7 +90,7 @@ def set_run_id(run_id: str | None) -> None:
 
 
 class log_duration:
-    """Context manager for timing blocks and optionally recording Prometheus histograms."""
+    """Context manager for timing blocks and logging their duration."""
 
     def __init__(self, logger: logging.Logger, event: str, **fields: Any) -> None:
         self.logger = logger

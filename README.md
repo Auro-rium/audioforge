@@ -45,37 +45,32 @@ and optionally applies waveform and SpecAugment transforms. It supports:
 
 Both models train with a multilabel loss selected via the `loss_fn` training
 config key: `bce` (default, `BCEWithLogitsLoss`) or `focal` (class-imbalance-aware,
-tunable via `focal_gamma`). Training is implemented with
-Hugging Face Accelerate and supports mixed precision, gradient accumulation,
-multi-GPU execution, checkpoint resume, periodic validation, and best-model
-selection by mAP.
+tunable via `focal_gamma`). Training is implemented with Hugging Face
+Accelerate and supports mixed precision, gradient accumulation, checkpoint
+resume, periodic validation, and best-model selection by mAP. The training
+scripts (`scripts/train_scratch_cnn.sh`, `scripts/train_ast_2gpu.sh`) default
+to a single GPU (`AUDIOFORGE_NUM_PROCESSES=1`); pass a higher value to run
+multi-GPU via `accelerate launch`.
 
 Prepare data and run a smoke test from the repository root:
 
 ```bash
 python scripts/prepare_fsd50k.py --root data/raw/fsd50k
-python -m audioforge.training.train_fsd50k --config configs/fsd50k/smoke.yaml
+bash scripts/smoke_train.sh       # scratch_cnn
+bash scripts/smoke_train_ast.sh   # ast + LoRA
 ```
 
-## Inference and serving
-
-FSD50K checkpoints emitted by training embed their model configuration. Event
-inference requires the checkpoint and the matching label map:
+Then run the real training scripts:
 
 ```bash
-python -m audioforge.inference.predict_event audio.wav \
-  --checkpoint outputs/smoke_scratch/best/scratch_cnn_best.pt \
-  --label-map data/manifests/fsd50k/label_map.json
+AUDIOFORGE_NUM_PROCESSES=1 bash scripts/train_scratch_cnn.sh
+AUDIOFORGE_NUM_PROCESSES=1 bash scripts/train_ast_2gpu.sh
 ```
 
-The FastAPI service exposes `/health` and `/predict/event`. Configure the
-artifacts through environment variables and start it with:
-
-```bash
-AUDIOFORGE_EVENT_CHECKPOINT=... \
-AUDIOFORGE_LABEL_MAP=... \
-python -m audioforge.serving.api
-```
+This repository does not include an inference or serving layer — it covers
+data prep, training, evaluation, and publishing trained checkpoints to the
+Hugging Face Hub. Load a published checkpoint directly (see the model cards
+linked below for a working code snippet) if you need to run inference.
 
 ## Publishing to the Hugging Face Hub
 
@@ -87,9 +82,10 @@ Both final models are now published on the Hugging Face Hub:
   (final mAP 0.5567)
 
 To publish a checkpoint locally, use `scripts/export_hf.py`. Authenticate
-first (`huggingface-cli login` or an `HF_TOKEN` env var on the machine you
-run this from -- never pass a token as a CLI argument or paste it into a
-shared terminal/chat):
+first (`hf auth login` -- `huggingface-cli login` is deprecated in current
+`huggingface_hub` releases -- or an `HF_TOKEN` env var on the machine you run
+this from -- never pass a token as a CLI argument or paste it into a shared
+terminal/chat):
 
 ```bash
 # scratch_cnn: custom architecture, so this stages config.json +
@@ -114,7 +110,14 @@ catch any checkpoint/config mismatch) without pushing anything.
 ## Reproducibility and artifacts
 
 Configuration files, manifests, label maps, distributed-runtime metadata,
-checkpoints, per-evaluation metrics, and benchmark rows are stored explicitly.
-Use the smoke and subset configurations for local validation, then use the
-multi-GPU scripts for full benchmark runs. Dataset files are not committed to
-the repository.
+per-evaluation metrics, and benchmark rows are committed to `reports/` for
+both real training runs (`reports/scratch_cnn_report.md`,
+`reports/ast_report.md`, with their loss/eval-curve and per-class-AP plots).
+Raw checkpoints (`.pt`, `.safetensors`) are gitignored — they live on the
+Hugging Face Hub instead (see above), not in this repository. Dataset files
+under `data/` are also not committed; run `scripts/download_fsd50k.sh` and
+`scripts/prepare_fsd50k.py` to regenerate them.
+
+Use `configs/fsd50k/smoke.yaml` / `smoke_ast.yaml` for a fast local sanity
+check before committing to a full run, and `configs/fsd50k/random_subset.yaml`
+for a quick run on a smaller slice of the data.
