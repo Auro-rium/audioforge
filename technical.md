@@ -55,9 +55,8 @@ audioforge/
     distributed.py    # Accelerator setup, checkpoint save helpers
   evaluation/
     fsd50k_metrics.py    # mAP, per-class AP, precision/recall/F1
-    benchmark_table.py   # render benchmark rows as markdown
   utils/
-    checkpoint.py, device.py, logging.py, seed.py
+    logging.py, seed.py
 
 configs/fsd50k/       # YAML configs: smoke, scratch_cnn, ast_2gpu, random_subset
 scripts/               # data prep, download, training launchers, HF export
@@ -701,6 +700,13 @@ above infrastructure work started. Key fixes:
   Prometheus instrumentation in `utils/logging.py` (a metrics-server hook
   that was never actually invoked with `prometheus_enabled=True` anywhere
   in the codebase) was removed at the same time for the same reason.
+  That removal cascaded: `utils/checkpoint.py`, `utils/device.py`, and
+  `evaluation/benchmark_table.py`'s `write_markdown()` had no caller left
+  anywhere in the codebase once `predict_event.py` was gone (verified by
+  grep for every function name, not just the module path — `trainer.py` and
+  `export_hf.py` each have their own separate, self-contained checkpoint
+  load/save logic and never imported these utilities), so they were removed
+  too rather than left as orphaned dead code.
 
 ---
 
